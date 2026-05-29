@@ -19,6 +19,7 @@ export interface LoginFormField {
   field_id?: string;
   placeholder?: string;
   label?: string;
+  field_value?: string;
 }
 
 export interface LoginFormInfo {
@@ -150,6 +151,7 @@ export interface ProgressUpdate {
 
 export interface AIStatus {
   enabled: boolean;
+  provider: string;
   model: string | null;
   connected: boolean;
 }

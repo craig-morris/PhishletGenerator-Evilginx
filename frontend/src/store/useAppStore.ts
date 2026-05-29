@@ -67,7 +67,7 @@ const initialState = {
   validationResult: null,
   authorName: localStorage.getItem("rtl_author") || "@rtlphishletgen",
   useAI: false,
-  aiStatus: { enabled: false, model: null, connected: false },
+  aiStatus: { enabled: false, provider: "deepseek", model: null, connected: false },
   savedPhishlets: [] as SavedPhishlet[],
 };
 

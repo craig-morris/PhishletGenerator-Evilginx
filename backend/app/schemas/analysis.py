@@ -22,6 +22,7 @@ class LoginFormField(BaseModel):
     field_id: Optional[str] = None
     placeholder: Optional[str] = None
     label: Optional[str] = None
+    field_value: Optional[str] = None
 
 
 class LoginFormInfo(BaseModel):

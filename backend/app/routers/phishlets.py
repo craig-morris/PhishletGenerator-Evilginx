@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
@@ -101,7 +101,7 @@ async def update_phishlet(phishlet_id: str, request: SavedPhishletUpdate):
         validation = validator.validate_yaml(request.yaml_content)
         phishlet.validation_status = "valid" if validation.valid else "invalid"
 
-    phishlet.updated_at = datetime.utcnow()
+    phishlet.updated_at = datetime.now(timezone.utc)
     _save_phishlet(phishlet)
     return phishlet
 

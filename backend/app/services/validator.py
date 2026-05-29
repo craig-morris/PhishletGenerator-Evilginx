@@ -150,6 +150,15 @@ class PhishletValidator:
                 result.errors.append(f"force_post[{i}]: missing 'path'")
             if "search" not in fp:
                 result.errors.append(f"force_post[{i}]: missing 'search'")
+            if "force" not in fp:
+                result.valid = False
+                result.errors.append(
+                    f"force_post[{i}]: missing 'force' field (required by Evilginx). "
+                    f"Use an empty list '[]' if no forced values are needed."
+                )
+            elif not isinstance(fp.get("force"), list):
+                result.valid = False
+                result.errors.append(f"force_post[{i}]: 'force' must be a list")
 
     def _validate_js_inject(self, injects, result: ValidationResult):
         if not isinstance(injects, list):

@@ -20,7 +20,7 @@ export default function Generator() {
     checkAiStatus()
       .then((status) => store.setAiStatus(status))
       .catch(() =>
-        store.setAiStatus({ enabled: false, model: null, connected: false })
+        store.setAiStatus({ enabled: false, provider: "deepseek", model: null, connected: false })
       );
   }, []);
 

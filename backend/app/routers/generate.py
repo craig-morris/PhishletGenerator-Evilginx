@@ -69,12 +69,18 @@ async def generate_from_analysis(request: GenerateFromAnalysisRequest):
 @router.get("/ai-status")
 async def check_ai_status():
     if not settings.ai_enabled:
-        return {"enabled": False, "model": None, "connected": False}
+        return {
+            "enabled": False,
+            "provider": settings.ai_provider,
+            "model": None,
+            "connected": False,
+        }
 
     ai = AIService()
     connected = await ai.check_connection()
     return {
         "enabled": True,
+        "provider": settings.ai_provider,
         "model": settings.ai_model,
         "connected": connected,
     }

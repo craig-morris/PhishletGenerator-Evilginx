@@ -3,6 +3,15 @@ import { Sparkles, CheckCircle2, XCircle, RefreshCw } from "lucide-react";
 import { useAppStore } from "@/store/useAppStore";
 import { checkAiStatus } from "@/services/api";
 
+const PROVIDER_INFO: Record<string, { label: string; envKey: string; envModel: string; envBase?: string }> = {
+  openai: { label: "OpenAI", envKey: "AI_API_KEY", envModel: "AI_MODEL=openai/gpt-4o" },
+  anthropic: { label: "Anthropic (Claude)", envKey: "AI_API_KEY", envModel: "AI_MODEL=anthropic/claude-sonnet-4-20250514" },
+  deepseek: { label: "DeepSeek", envKey: "AI_API_KEY", envModel: "AI_MODEL=deepseek/deepseek-chat" },
+  ollama: { label: "Ollama (Local)", envKey: "(no key needed)", envModel: "AI_MODEL=ollama/llama3", envBase: "AI_BASE_URL=http://localhost:11434" },
+  lmstudio: { label: "LM Studio (Local)", envKey: "(no key needed)", envModel: "AI_MODEL=openai/lmstudio-local", envBase: "AI_BASE_URL=http://localhost:1234/v1" },
+  custom: { label: "Custom (OpenAI-compatible)", envKey: "AI_API_KEY", envModel: "AI_MODEL=openai/model-name", envBase: "AI_BASE_URL=http://..." },
+};
+
 export default function Settings() {
   const { authorName, setAuthorName, aiStatus, setAiStatus } = useAppStore();
   const [checking, setChecking] = useState(false);
@@ -13,7 +22,7 @@ export default function Settings() {
       const status = await checkAiStatus();
       setAiStatus(status);
     } catch {
-      setAiStatus({ enabled: false, model: null, connected: false });
+      setAiStatus({ enabled: false, provider: "deepseek", model: null, connected: false });
     }
     setChecking(false);
   };
@@ -21,6 +30,8 @@ export default function Settings() {
   useEffect(() => {
     refreshAiStatus();
   }, []);
+
+  const providerInfo = PROVIDER_INFO[aiStatus.provider || "deepseek"] || PROVIDER_INFO.deepseek;
 
   return (
     <div className="max-w-2xl mx-auto px-8 py-12 space-y-8">
@@ -82,6 +93,15 @@ export default function Settings() {
             )}
           </div>
 
+          {aiStatus.provider && (
+            <div className="flex items-center justify-between py-2">
+              <span className="text-sm text-zinc-400">Provider</span>
+              <span className="text-sm text-zinc-300 font-mono">
+                {providerInfo.label}
+              </span>
+            </div>
+          )}
+
           {aiStatus.model && (
             <div className="flex items-center justify-between py-2">
               <span className="text-sm text-zinc-400">Model</span>
@@ -103,13 +123,31 @@ export default function Settings() {
           </div>
         </div>
 
-        <div className="p-3 bg-zinc-800 rounded-lg">
+        <div className="p-3 bg-zinc-800 rounded-lg space-y-3">
           <p className="text-xs text-zinc-500">
-            To enable AI enhancement, set <code className="text-zinc-400">AI_API_KEY</code> and{" "}
-            <code className="text-zinc-400">AI_MODEL</code> in your{" "}
-            <code className="text-zinc-400">.env</code> file. Supported
-            providers: DeepSeek, Claude (Anthropic), OpenAI, and any
-            litellm-compatible model.
+            To enable AI enhancement, configure your <code className="text-zinc-400">.env</code> file with the appropriate settings for your chosen provider.
+          </p>
+          <div className="space-y-2">
+            <h4 className="text-xs font-medium text-zinc-400">Supported Providers:</h4>
+            <div className="grid grid-cols-1 gap-1.5">
+              {Object.entries(PROVIDER_INFO).map(([key, info]) => (
+                <div key={key} className="text-xs text-zinc-500">
+                  <span className="text-zinc-300">{info.label}:</span>{" "}
+                  <code className="text-zinc-400">AI_PROVIDER={key}</code>,{" "}
+                  <code className="text-zinc-400">{info.envModel}</code>
+                  {info.envBase && (
+                    <>
+                      {", "}
+                      <code className="text-zinc-400">{info.envBase}</code>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          <p className="text-xs text-zinc-600">
+            For Ollama and LM Studio, ensure the local server is running before enabling AI features.
+            Ollama defaults to port 11434, LM Studio defaults to port 1234.
           </p>
         </div>
       </div>
@@ -119,14 +157,14 @@ export default function Settings() {
         <h3 className="text-sm font-medium text-zinc-200">About</h3>
         <div className="space-y-2 text-sm text-zinc-400">
           <p>
-            <span className="text-zinc-300">RTLPhishletGenerator</span> v1.0.0
+            <span className="text-zinc-300">RTLPhishletGenerator</span> v1.1.0
           </p>
           <p>
             Automated Evilginx phishlet generator for authorized red team and
             purple team security testing engagements.
           </p>
           <p className="text-xs text-zinc-600 pt-2">
-            Evilginx v3.2.0+ compatible
+            Evilginx v3.2.0+ compatible | Supports Ollama, LM Studio, OpenAI, Anthropic, DeepSeek
           </p>
         </div>
       </div>

@@ -14,12 +14,23 @@ SYSTEM_PROMPT = """You are an expert Evilginx phishlet developer for authorized 
 You understand the Evilginx v3 phishlet YAML format thoroughly, including proxy_hosts, sub_filters,
 auth_tokens, credentials, auth_urls, login, force_post, and js_inject sections.
 
+CRITICAL: Every force_post entry MUST include a 'force' field (even if empty list []).
+The force_post format is:
+  force_post:
+    - path: '/login'
+      search:
+        - {key: 'email', search: '(.*)'}
+        - {key: 'password', search: '(.*)'}
+      force:
+        - {key: 'csrf_token', value: ''}
+      type: 'post'
+
 Given a rule-based phishlet draft and the analysis data of a target website, your job is to:
 1. Identify missing or incorrect proxy_hosts (domains/subdomains)
 2. Suggest better auth_token cookie names based on the target platform
 3. Improve credential field mappings
 4. Add necessary sub_filters for cross-domain scenarios
-5. Add force_post entries if needed
+5. Add force_post entries if needed (ALWAYS include 'force' field)
 6. Add js_inject if the site uses SPA/JavaScript authentication
 7. Ensure the phishlet follows Evilginx best practices
 
@@ -34,6 +45,10 @@ Known platform patterns:
 - Google: accounts.google.com, myaccount.google.com
   Cookies: SID, HSID, SSID, APISID, SAPISID
   Creds: identifier (email), Passwd (password)
+
+- Instagram: www.instagram.com
+  Cookies: sessionid, csrftoken, ds_user_id, ig_did, rur
+  Creds: username, enc_password
 
 - Okta: {tenant}.okta.com
   Cookies: sid, idx
@@ -51,7 +66,7 @@ Known platform patterns:
 class AIService:
     def __init__(self):
         self.model = settings.ai_model
-        self.api_key = settings.ai_api_key
+        self.litellm_params = settings.get_litellm_params()
 
     async def refine_phishlet(
         self, phishlet: Phishlet, analysis: AnalysisResult
@@ -78,12 +93,12 @@ Refine the phishlet for accuracy.
 
 Return the improved phishlet as a single JSON object.
 Preserve the same schema structure. Only modify values that need improvement.
+CRITICAL: Every force_post entry MUST include a 'force' field (even if empty list []).
 Do NOT add explanations - return ONLY the JSON."""
 
         try:
             response = await litellm.acompletion(
-                model=self.model,
-                api_key=self.api_key,
+                **self.litellm_params,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -101,6 +116,13 @@ Do NOT add explanations - return ONLY the JSON."""
                 content = content.split("```")[1].split("```")[0]
 
             refined_data = json.loads(content.strip())
+
+            # Ensure every force_post has a 'force' field
+            if "force_post" in refined_data:
+                for fp in refined_data["force_post"]:
+                    if "force" not in fp:
+                        fp["force"] = []
+
             refined_phishlet = Phishlet.model_validate(refined_data)
             return refined_phishlet
 
@@ -135,11 +157,11 @@ Post-Login URL: {analysis.post_login_url or 'Not detected'}"""
     async def check_connection(self) -> bool:
         try:
             await litellm.acompletion(
-                model=self.model,
-                api_key=self.api_key,
+                **self.litellm_params,
                 messages=[{"role": "user", "content": "Reply with 'ok'"}],
                 max_tokens=5,
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"AI connection check failed: {e}")
             return False

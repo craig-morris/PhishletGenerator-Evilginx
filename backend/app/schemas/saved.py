@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -28,8 +28,8 @@ class SavedPhishletUpdate(BaseModel):
 class SavedPhishlet(SavedPhishletBase):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     yaml_content: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     validation_status: str = "unknown"
 
 
