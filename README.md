@@ -40,51 +40,398 @@ Based on the [Wavestone "Pushing Evilginx to its Limit"](https://www.riskinsight
 - **`credentials` type: json** — Okta auth uses JSON API bodies; username captured via regex `"identifier":"([^"]*)"`
 - **Advanced scraper detection** — SRI hashes, X-Frame-Options, OIDC redirect URIs, KMSI prompts, CORS origins
 
-## Prerequisites
+---
 
-- Python 3.11+
-- Node.js 20+
-- Docker (optional, for containerized deployment)
+## Step-by-Step Installation Guide
 
-## Quick Start
+### Prerequisites
 
-### Option 1: Docker (Recommended)
+Before you begin, make sure your system meets these requirements:
+
+| Requirement | Minimum Version | How to Check | Install |
+|---|---|---|---|
+| **Python** | 3.11 or higher | `python3 --version` | [python.org](https://www.python.org/downloads/) or your OS package manager |
+| **Node.js** | 20.x or higher | `node --version` | [nodejs.org](https://nodejs.org/) or via `nvm` |
+| **npm** | 10.x or higher | `npm --version` | Included with Node.js |
+| **Git** | 2.x | `git --version` | [git-scm.com](https://git-scm.com/) |
+| **Make** (optional) | Any | `make --version` | OS package manager (`apt install make`, `brew install make`) |
+| **Docker** (optional) | 20.x+ | `docker --version` | [docker.com](https://docs.docker.com/get-docker/) |
+| **Docker Compose** (optional) | 2.x+ | `docker compose version` | Included with Docker Desktop |
+
+> **Note:** Docker is only required if you choose the Docker installation method (Option 1). For manual setup (Option 2), only Python, Node.js, and Git are required.
+
+---
+
+### Step 1 — Clone the Repository
+
+```bash
+git clone https://github.com/cysec-don/PhishletGenerator-Evilginx.git
+cd PhishletGenerator-Evilginx
+```
+
+---
+
+### Step 2 — Choose Your Installation Method
+
+You have three options. Pick the one that best fits your environment:
+
+| Method | Best For | Setup Time | Requires |
+|---|---|---|---|
+| **Option 1: Docker** | Production, quick start, isolated environments | ~5 minutes | Docker + Docker Compose |
+| **Option 2: Manual** | Development, debugging, customization | ~10 minutes | Python 3.11+, Node.js 20+ |
+| **Option 3: One-command** | Fastest manual setup (uses Make) | ~5 minutes | Python 3.11+, Node.js 20+, Make |
+
+---
+
+### Option 1: Docker Installation (Recommended)
+
+This is the fastest and cleanest way to get RTLPhishletGenerator running. Everything runs inside containers — no need to install Python packages or Node modules on your host machine.
+
+#### Step 2a — Create your environment file
 
 ```bash
 cp .env.example .env
-# Edit .env with your AI configuration (optional)
-docker-compose up -d
 ```
 
-Open http://localhost:3000
+#### Step 2b — (Optional) Configure AI settings
 
-### Option 2: Manual Setup
+Open `.env` in your preferred editor and configure the AI provider if you want AI-enhanced phishlet generation:
 
 ```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-playwright install chromium
-cd ..
-
-# Frontend
-cd frontend
-npm install
-cd ..
-
-# Run both (requires Make)
-make dev
+nano .env
 ```
 
-- Backend: http://localhost:8000 (API docs at /docs)
-- Frontend: http://localhost:5173
+See the [Configuration](#configuration) section below for all available options. The defaults work without any AI provider — the rule-based engine generates complete phishlets on its own.
 
-### Option 3: One-command Install
+#### Step 2c — Build and start the containers
+
+```bash
+docker compose up -d --build
+```
+
+This command:
+1. Builds the **backend** Docker image (Python 3.12, installs all pip dependencies, downloads Playwright Chromium browser)
+2. Builds the **frontend** Docker image (Node.js 20, installs npm packages, compiles the React app, packages into Nginx)
+3. Starts both containers in detached mode
+4. The frontend Nginx container proxies API requests to the backend automatically
+
+> **First-time build note:** The initial build takes 3-5 minutes because it downloads Playwright's Chromium browser (~150 MB) and all npm/pip packages. Subsequent starts are instant.
+
+#### Step 2d — Verify it is running
+
+```bash
+# Check container status
+docker compose ps
+
+# Check backend health
+curl http://localhost:8000/api/v1/health
+```
+
+You should see a JSON response like `{"status":"ok","ai_enabled":false}`.
+
+#### Step 2e — Access the application
+
+Open your browser and navigate to:
+
+- **Web GUI:** http://localhost:3000
+- **Backend API docs:** http://localhost:8000/docs
+
+#### Useful Docker commands
+
+```bash
+# View live logs
+docker compose logs -f
+
+# View backend logs only
+docker compose logs -f backend
+
+# View frontend logs only
+docker compose logs -f frontend
+
+# Stop the containers
+docker compose down
+
+# Rebuild after code changes
+docker compose up -d --build
+
+# Full reset (removes containers and volumes)
+docker compose down -v
+```
+
+---
+
+### Option 2: Manual Installation
+
+Use this method if you want to run the backend and frontend directly on your machine for development or debugging.
+
+#### Step 2a — Set up the backend
+
+```bash
+cd backend
+
+# Create a Python virtual environment (recommended)
+python3 -m venv venv
+
+# Activate the virtual environment
+# On Linux/macOS:
+source venv/bin/activate
+# On Windows:
+# venv\Scripts\activate
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install Playwright Chromium browser
+playwright install chromium
+
+# Install Playwright system dependencies (Linux only)
+# This is required on Ubuntu/Debian-based systems
+playwright install-deps chromium
+
+# Return to project root
+cd ..
+```
+
+> **Linux note:** If `playwright install-deps` fails with permission errors, run it with `sudo`. The command installs system libraries (libglib, libnss3, libatk, etc.) that Chromium needs to run headlessly.
+
+> **macOS note:** You do not need `playwright install-deps` — macOS bundles the required libraries.
+
+> **Windows note:** Use `playwright install chromium` only. The `install-deps` command is not needed on Windows.
+
+#### Step 2b — Set up the frontend
+
+```bash
+cd frontend
+
+# Install Node.js dependencies
+npm install
+
+# Return to project root
+cd ..
+```
+
+#### Step 2c — Create your environment file
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` to configure AI settings if desired (see [Configuration](#configuration) below).
+
+#### Step 2d — Start the backend
+
+Open a terminal and run:
+
+```bash
+cd backend
+
+# Make sure your virtual environment is activated
+source venv/bin/activate  # Linux/macOS
+# venv\Scripts\activate   # Windows
+
+# Start the FastAPI server
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+You should see output like:
+```
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process
+```
+
+Verify: http://localhost:8000/docs should show the interactive API documentation.
+
+#### Step 2e — Start the frontend
+
+Open a **separate** terminal and run:
+
+```bash
+cd frontend
+
+# Start the Vite development server
+npm run dev
+```
+
+You should see output like:
+```
+  VITE v6.x.x  ready in xxx ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.x.x:5173/
+```
+
+The Vite dev server automatically proxies `/api` requests to the backend at `http://localhost:8000`.
+
+#### Step 2f — Access the application
+
+Open your browser and navigate to:
+
+- **Web GUI:** http://localhost:5173
+- **Backend API docs:** http://localhost:8000/docs
+
+> **Note:** In manual mode, the frontend runs on port 5173 (Vite dev server) instead of port 3000 (Nginx in Docker mode). Both are fully functional.
+
+---
+
+### Option 3: One-Command Install (Using Make)
+
+If you have `make` installed, you can use the provided Makefile for faster setup.
+
+#### Step 2a — Create your environment file
+
+```bash
+cp .env.example .env
+```
+
+#### Step 2b — Install all dependencies
 
 ```bash
 make install
+```
+
+This runs the equivalent of:
+- `cd backend && pip install -r requirements.txt && playwright install chromium`
+- `cd frontend && npm install`
+
+#### Step 2c — Start both services
+
+```bash
 make dev
 ```
+
+This starts the backend and frontend concurrently using `make -j2`:
+- Backend: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
+- Frontend: `npm run dev` (Vite on port 5173)
+
+#### Access the application
+
+- **Web GUI:** http://localhost:5173
+- **Backend API docs:** http://localhost:8000/docs
+
+#### Other Make commands
+
+| Command | Description |
+|---|---|
+| `make install` | Install all Python and Node.js dependencies |
+| `make dev` | Start both backend and frontend in development mode |
+| `make backend` | Start only the backend server |
+| `make frontend` | Start only the frontend dev server |
+| `make build` | Build the frontend for production (outputs to `frontend/dist/`) |
+| `make docker-up` | Build and start Docker containers |
+| `make docker-down` | Stop Docker containers |
+| `make test` | Run backend tests with pytest |
+| `make lint` | Lint backend (ruff) and frontend (tsc) code |
+
+---
+
+### Step 3 — Verify Your Installation
+
+Regardless of which method you chose, verify everything is working correctly:
+
+1. **Check the backend health endpoint:**
+
+   ```bash
+   curl http://localhost:8000/api/v1/health
+   ```
+
+   Expected response: `{"status":"ok","ai_enabled":true}` or `{"status":"ok","ai_enabled":false}`
+
+2. **Check the AI status (if configured):**
+
+   ```bash
+   curl http://localhost:8000/api/v1/generate/ai-status
+   ```
+
+   This returns your AI provider configuration and connectivity status.
+
+3. **Open the Web GUI** in your browser:
+   - Docker: http://localhost:3000
+   - Manual/Make: http://localhost:5173
+
+4. **Test phishlet generation** by entering a target URL in the Generator page and clicking Analyze.
+
+---
+
+### Step 4 — (Optional) Configure AI Integration
+
+AI integration is completely optional. The rule-based engine generates valid, complete phishlets without any AI provider. However, enabling AI improves accuracy for complex targets and adds platform-specific intelligence.
+
+See the [AI Integration](#ai-integration) section below for detailed setup instructions for each provider.
+
+---
+
+### Troubleshooting Installation Issues
+
+#### Playwright Chromium fails to install
+
+```bash
+# Error: "Executable doesn't exist at /path/to/chromium"
+# Solution: Reinstall Playwright browsers
+cd backend
+playwright install chromium
+playwright install-deps chromium   # Linux only
+```
+
+#### Python version too old
+
+```bash
+# Error: "ModuleNotFoundError: No module named 'tomllib'" or similar
+# Solution: Python 3.11+ is required. Check your version:
+python3 --version
+
+# Install a newer Python via pyenv (recommended):
+curl https://pyenv.run | bash
+pyenv install 3.12
+pyenv global 3.12
+```
+
+#### npm install fails on frontend
+
+```bash
+# Error: "ERESOLVE unable to resolve dependency tree"
+# Solution: Clear the npm cache and try again
+cd frontend
+rm -rf node_modules package-lock.json
+npm cache clean --force
+npm install
+```
+
+#### Port already in use
+
+```bash
+# Error: "Address already in use" on port 8000 or 5173
+# Find what is using the port:
+lsof -i :8000    # Linux/macOS
+netstat -ano | findstr :8000    # Windows
+
+# Kill the process or use a different port:
+uvicorn app.main:app --port 8001    # Backend on different port
+npm run dev -- --port 3001          # Frontend on different port
+```
+
+#### Docker build fails
+
+```bash
+# Error: "no space left on device" during Docker build
+# Solution: Clean up Docker resources
+docker system prune -a
+docker compose up -d --build
+```
+
+#### Virtual environment issues
+
+```bash
+# Error: "pip: command not found" after activating venv
+# Solution: Recreate the virtual environment
+cd backend
+rm -rf venv
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+---
 
 ## Configuration
 
@@ -103,6 +450,20 @@ AI_MODEL=deepseek/deepseek-chat
 # Base URL (optional, auto-configured for Ollama/LM Studio)
 # AI_BASE_URL=http://localhost:11434
 ```
+
+### Full Environment Variables Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_PROVIDER` | `deepseek` | AI provider: `openai`, `anthropic`, `deepseek`, `ollama`, `lmstudio`, `custom`, or leave empty to disable AI |
+| `AI_API_KEY` | (empty) | API key for cloud providers. Not required for Ollama or LM Studio |
+| `AI_MODEL` | `deepseek/deepseek-chat` | Model name in litellm format. See provider table below |
+| `AI_BASE_URL` | (auto) | Override the default API base URL. Auto-configured for Ollama/LM Studio |
+| `DEBUG` | `false` | Enable FastAPI debug mode |
+| `CORS_ORIGINS` | `["http://localhost:5173","http://localhost:3000"]` | Allowed CORS origins (JSON array) |
+| `PLAYWRIGHT_HEADLESS` | `true` | Run Playwright browser in headless mode |
+| `PLAYWRIGHT_TIMEOUT` | `30000` | Playwright page load timeout in milliseconds |
+| `EVILGINX_MIN_VER` | `3.2.0` | Minimum Evilginx version for generated phishlets |
 
 ## AI Integration
 
