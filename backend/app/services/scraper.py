@@ -19,6 +19,7 @@ class WebScraper:
         self.cookies_by_domain: dict[str, list[str]] = {}
         self.domains_seen: set[str] = set()
         self.auth_endpoints: list[str] = []
+        self.response_headers: dict[str, dict] = {}  # domain -> headers
 
     async def analyze_url(
         self,
@@ -95,7 +96,11 @@ class WebScraper:
 
             post_login_url = self._detect_post_login_url()
             has_mfa = self._detect_mfa_indicators(html_content)
+            has_kmsi = self._detect_kmsi(html_content)
             uses_js_auth = self._detect_js_auth(html_content)
+            sri_hashes = self._detect_sri_hashes(html_content)
+            x_frame_options = self._detect_x_frame_options()
+            oidc_redirect_uris = self._detect_oidc_redirect_uris()
 
             await browser.close()
 
@@ -110,11 +115,16 @@ class WebScraper:
                 "post_login_url": post_login_url,
                 "login_path": parsed.path or "/",
                 "has_mfa": has_mfa,
+                "has_kmsi": has_kmsi,
                 "uses_javascript_auth": uses_js_auth,
                 "auth_api_endpoints": self.auth_endpoints,
                 "page_title": page_title,
                 "network_requests": self.network_requests,
                 "html_content": html_content,
+                "sri_integrity_hashes": sri_hashes,
+                "x_frame_options": x_frame_options,
+                "cors_origins": list(self._detect_cors_origins()),
+                "oidc_redirect_uris": oidc_redirect_uris,
             }
 
     def _on_request(self, request: Request):
@@ -131,10 +141,15 @@ class WebScraper:
 
     def _on_response(self, response: Response):
         headers = response.headers
+        parsed = urlparse(response.url)
+        domain = parsed.netloc
+
+        # Store response headers for advanced analysis
+        if domain not in self.response_headers:
+            self.response_headers[domain] = dict(headers)
+
         set_cookie = headers.get("set-cookie", "")
         if set_cookie:
-            parsed = urlparse(response.url)
-            domain = parsed.netloc
             cookie_names = re.findall(r"^([^=]+)=", set_cookie, re.MULTILINE)
             if domain not in self.cookies_by_domain:
                 self.cookies_by_domain[domain] = []
@@ -350,6 +365,44 @@ class WebScraper:
             r"\.post\s*\(.*/api/auth", r"firebase\.auth",
         ]
         return any(re.search(p, html, re.IGNORECASE) for p in js_auth_patterns)
+
+    def _detect_kmsi(self, html: str) -> bool:
+        """Detect 'Keep me signed in' (KMSI) prompts."""
+        kmsi_patterns = [r"keep.?me.?signed.?in", r"stay.?signed.?in", r"kmsi", r"remember.?me"]
+        html_lower = html.lower()
+        return any(re.search(p, html_lower) for p in kmsi_patterns)
+
+    def _detect_sri_hashes(self, html: str) -> list[str]:
+        """Detect Subresource Integrity (SRI) hashes that may need stripping."""
+        return re.findall(r'integrity="([^"]+)"', html)
+
+    def _detect_x_frame_options(self) -> Optional[str]:
+        """Detect X-Frame-Options header across all response domains."""
+        for domain, headers in self.response_headers.items():
+            xfo = headers.get("x-frame-options", "")
+            if xfo:
+                return xfo.upper()
+        return None
+
+    def _detect_cors_origins(self) -> set[str]:
+        """Detect Access-Control-Allow-Origin headers."""
+        origins: set[str] = set()
+        for domain, headers in self.response_headers.items():
+            acao = headers.get("access-control-allow-origin", "")
+            if acao and acao != "*":
+                origins.add(acao)
+        return origins
+
+    def _detect_oidc_redirect_uris(self) -> list[str]:
+        """Detect OIDC redirect_uri parameters from network requests."""
+        uris: list[str] = []
+        for req in self.network_requests:
+            url = req.get("url", "")
+            match = re.search(r"[?&]redirect_uri=([^&]+)", url, re.IGNORECASE)
+            if match:
+                from urllib.parse import unquote
+                uris.append(unquote(match.group(1)))
+        return uris
 
     @staticmethod
     def _extract_base_domain(hostname: str) -> str:

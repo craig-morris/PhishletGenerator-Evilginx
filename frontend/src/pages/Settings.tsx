@@ -157,14 +157,14 @@ export default function Settings() {
         <h3 className="text-sm font-medium text-zinc-200">About</h3>
         <div className="space-y-2 text-sm text-zinc-400">
           <p>
-            <span className="text-zinc-300">RTLPhishletGenerator</span> v1.1.0
+            <span className="text-zinc-300">RTLPhishletGenerator</span> v2.0.0
           </p>
           <p>
             Automated Evilginx phishlet generator for authorized red team and
             purple team security testing engagements.
           </p>
           <p className="text-xs text-zinc-600 pt-2">
-            Evilginx v3.2.0+ compatible | Supports Ollama, LM Studio, OpenAI, Anthropic, DeepSeek
+            Evilginx v3.2.0+ compatible | Wavestone-Grade Advanced Techniques | Supports Ollama, LM Studio, OpenAI, Anthropic, DeepSeek
           </p>
         </div>
       </div>

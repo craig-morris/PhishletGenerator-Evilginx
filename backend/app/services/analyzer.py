@@ -34,10 +34,15 @@ class SiteAnalyzer:
             post_login_url=raw["post_login_url"],
             login_path=raw["login_path"],
             has_mfa=raw["has_mfa"],
+            has_kmsi=raw.get("has_kmsi", False),
             uses_javascript_auth=raw["uses_javascript_auth"],
             auth_api_endpoints=raw["auth_api_endpoints"],
             page_title=raw["page_title"],
             suggested_name=suggested_name,
+            sri_integrity_hashes=raw.get("sri_integrity_hashes", []),
+            x_frame_options=raw.get("x_frame_options"),
+            cors_origins=raw.get("cors_origins", []),
+            oidc_redirect_uris=raw.get("oidc_redirect_uris", []),
         )
 
     def _build_auth_flow(self, raw: dict) -> list[AuthFlowStep]:

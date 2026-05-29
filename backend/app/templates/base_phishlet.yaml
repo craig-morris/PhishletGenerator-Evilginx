@@ -2,6 +2,7 @@
 # Evilginx v3.2.0+ compatible
 #
 # This template is auto-generated. Review and test before use in authorized engagements.
+# Informed by Wavestone research: "Pushing Evilginx to its Limit"
 
 name: '{name}'
 author: '{author}'

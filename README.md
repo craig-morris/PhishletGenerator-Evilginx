@@ -1,27 +1,44 @@
-# RTLPhishletGenerator
+# RTLPhishletGenerator v2.0
 
-Automated Evilginx Phishlet Generator for Authorized Red Team Engagements.
+Automated Evilginx Phishlet Generator for Authorized Red Team Engagements — **Wavestone-Grade Advanced Techniques**.
 
 ## Overview
 
-RTLPhishletGenerator analyzes target login pages and generates production-ready Evilginx v3 phishlet YAML configurations. It uses Playwright browser automation to map authentication flows, detect login forms, capture cookies, and discover all involved domains — then produces a valid phishlet with optional AI refinement.
+RTLPhishletGenerator v2.0 analyzes target login pages and generates production-ready Evilginx v3 phishlet YAML configurations using techniques from the [Wavestone "Pushing Evilginx to its Limit"](https://www.riskinsight-wavestone.com/en/2025/07/phishing-pushing-evilginx-to-its-limit/) research. It uses Playwright browser automation to map authentication flows, detect login forms, capture cookies, and discover all involved domains — then produces a complete phishlet with CORS bypass, SRI stripping, MFA enrollment automation, frame buster bypass, and optional AI refinement.
 
 **This tool is designed exclusively for authorized red team and purple team security testing engagements. All users must have proper NDA and written authorization.**
 
 ## Features
 
-- **Automated URL Analysis** — Playwright-powered browser analysis detects login forms, authentication flows, cookies, redirect chains, and all involved domains
-- **Intelligent Phishlet Generation** — Rule-based engine with known platform patterns for Microsoft 365, Google, Instagram, Okta, GitHub, AWS, and more
-- **Proper `force_post` Generation** — Automatically includes the required `force` field in all `force_post` entries, with CSRF token auto-detection from hidden form fields
-- **AI Enhancement (Optional)** — LLM integration via litellm for improved accuracy. Supports cloud providers (OpenAI, Anthropic, DeepSeek) and local providers (Ollama, LM Studio)
-- **Built-in Validation** — Schema validation and cross-section logical checks ensure Evilginx v3 compatibility, including `force` field verification in `force_post`
+- **Platform Fingerprinting** — Automatic detection of Okta, Azure/Microsoft 365, Google, Instagram with platform-specific phishlet templates
+- **Advanced `sub_filters`** — CORS bypass (redirectUri rewriting), SRI integrity hash stripping, X-Frame-Options removal, frame buster bypass (self===top, target=_top), OIDC redirect URI validation fix
+- **Multi-step `js_inject`** — MFA enrollment automation (enumerate authenticators → redirect to setup → exfil QR code), decoy page redirects after auth, frame buster bypass injection
+- **`params` Variable Substitution** — Okta phishlets use `{okta_orga}` for tenant names, making phishlets reusable across Okta organizations
+- **`force_post` with `force` Field** — KMSI auto-accept (`LoginOptions: 1`), MFA persistence (`rememberMFA: true`), CSRF token passthrough — always includes the required `force` field
+- **`credentials` with `type: json`** — Okta uses JSON body authentication; the generator correctly sets `type: json` with regex search patterns
+- **Automated URL Analysis** — Playwright-powered browser analysis detects login forms, authentication flows, cookies, redirect chains, SRI hashes, X-Frame-Options headers, OIDC redirect URIs, and KMSI prompts
+- **AI Enhancement (Optional)** — LLM integration via litellm for improved accuracy. Supports cloud providers (OpenAI, Anthropic, DeepSeek) and local providers (Ollama, LM Studio). AI is trained on Wavestone-grade advanced techniques.
+- **Built-in Validation** — Schema validation and cross-section logical checks ensure Evilginx v3 compatibility, including `force` field verification, `params` validation, and proxy_host/login domain consistency
 - **YAML Editor** — Full-featured Monaco editor with syntax highlighting for manual fine-tuning
 - **Real-time Progress** — WebSocket-based analysis progress with step-by-step feedback
 - **Web GUI** — Modern dark-themed interface with wizard workflow (URL input → Analysis → Review → Editor)
-- **Phishlet Library** — Save, organize, and manage generated phishlets with a built-in library
-- **Multi-step Auth Detection** — Detects MFA indicators, JavaScript-based authentication, and SPA login flows
-- **Cross-domain Sub-filtering** — Automatically generates sub_filters for multi-domain auth flows (e.g., login.microsoftonline.com + aadcdn.msftauth.net)
-- **Cookie Intelligence** — Case-insensitive matching against 50+ known session cookie names across 15+ platforms, with automatic exclusion of analytics/tracking cookies
+- **Phishlet Library** — Save, organize, and manage generated phishlets
+- **Cookie Intelligence** — Case-insensitive matching against 60+ known session cookie names across 17+ platforms
+
+## What's New in v2.0
+
+Based on the [Wavestone "Pushing Evilginx to its Limit"](https://www.riskinsight-wavestone.com/en/2025/07/phishing-pushing-evilginx-to-its-limit/) research:
+
+- **Platform fingerprinting engine** — Auto-detects Okta, Azure, Google, Instagram and applies the correct template
+- **Okta CORS bypass** — `sub_filters` that rewrite `redirectUri` in Okta's JavaScript, preventing CORS errors
+- **Okta SRI stripping** — Automatically strips `integrity` hashes from `<script>` tags and disables `mainScript.integrity` checks
+- **Okta redirect URI fix** — Rewrites `getIssuerOrigin()` to ensure OIDC callback URIs remain valid
+- **Okta MFA enrollment automation** — 3-step `js_inject`: decoy redirect → enumerate authenticators → automate QR code exfiltration
+- **Azure frame buster bypass** — `self === top` override, `target="_top"` removal, framework-specific form action fix, X-Frame-Options header stripping
+- **Azure KMSI + MFA persistence** — `force_post` entries for `/kmsi` (LoginOptions=1) and `/common/SAS` (rememberMFA=true)
+- **`params` support** — Okta phishlets use `{okta_orga}` variable substitution
+- **`credentials` type: json** — Okta auth uses JSON API bodies; username captured via regex `"identifier":"([^"]*)"`
+- **Advanced scraper detection** — SRI hashes, X-Frame-Options, OIDC redirect URIs, KMSI prompts, CORS origins
 
 ## Prerequisites
 
