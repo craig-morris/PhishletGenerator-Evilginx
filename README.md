@@ -106,7 +106,7 @@ See the [Configuration](#configuration) section below for all available options.
 #### Step 2c — Build and start the containers
 
 ```bash
-docker compose up -d --build
+docker-compose up -d
 ```
 
 This command:
